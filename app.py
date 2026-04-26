@@ -88,8 +88,8 @@ VEHICLES = [
         "type": "truck",
         "max_weight": 2000,
         "speed_kmh": 25,
-        "base_cost": 120000,
-        "cost_per_km": 12000,
+        "base_cost": 50000,
+        "cost_per_km": 8000,
         "co2_factor": 0.75,
         "good_for": ["Hàng nặng", "Hàng cồng kềnh", "Hàng công nghiệp"],
         "note": "Phù hợp hàng nặng, hàng lớn, tuyến dài hoặc cần tải trọng cao.",
@@ -98,31 +98,30 @@ VEHICLES = [
         "name": "Xe van",
         "type": "van",
         "max_weight": 800,
-        "speed_kmh": 30,
-        "base_cost": 80000,
-        "cost_per_km": 9000,
+        "speed": 30,
+        "base_cost": 30000,
+        "cost_per_km": 6000,
         "co2_factor": 0.45,
         "good_for": ["Thực phẩm", "Hàng dễ vỡ", "Hàng trung bình", "Hàng giá trị cao"],
         "note": "Bảo vệ hàng tốt, phù hợp mưa lớn và hàng cần che chắn.",
     },
     {
-        "name": "Xe máy / xe điện",
+         "name": "Xe máy / xe điện",
         "type": "motorbike",
         "max_weight": 30,
-        "speed_kmh": 35,
-        "base_cost": 25000,
-        "cost_per_km": 5000,
-        "co2_factor": 0.12,
+        "speed": 35,
+        "base_cost": 10000,
+        "cost_per_km": 4000,
         "good_for": ["Tài liệu", "Đồ ăn", "Hàng nhẹ", "Hàng y tế nhỏ"],
         "note": "Linh hoạt trong nội đô, phù hợp khi tắc đường và đơn nhỏ.",
     },
     {
-        "name": "Drone",
+    "name": "Drone",
         "type": "drone",
         "max_weight": 5,
-        "speed_kmh": 45,
-        "base_cost": 40000,
-        "cost_per_km": 7000,
+        "speed": 45,
+        "base_cost": 20000,
+        "cost_per_km": 5000,
         "co2_factor": 0.05,
         "good_for": ["Tài liệu", "Hàng y tế nhỏ", "Hàng rất gấp"],
         "note": "Rất nhanh với hàng nhẹ, nhưng phụ thuộc thời tiết và giới hạn khoảng cách.",
@@ -371,7 +370,21 @@ def evaluate_vehicle(
     if flood == "Nặng" and vehicle["type"] in ["motorbike", "van"]:
         time_min *= 1.35
 
-    cost = vehicle["base_cost"] + distance * vehicle["cost_per_km"]
+    cost = vehicle["base_cost"] + dist_km * vehicle["cost_per_km"]
+
+# 🔥 Tăng giá theo điều kiện thực tế
+if traffic == "High":
+    cost *= 1.2
+
+if weather == "Storm":
+    cost *= 1.3
+
+if flood == "Widespread":
+    cost *= 1.25
+
+# Drone đắt nếu xa
+if vehicle["type"] == "drone" and dist_km > 5:
+    cost *= 1.5
     if traffic == "Cao" and vehicle["type"] in ["van", "truck"]:
         cost *= 1.15
     if weather in ["Mưa", "Bão/Gió mạnh"] and vehicle["type"] == "motorbike":
@@ -444,7 +457,7 @@ def evaluate_vehicle(
 
     # Normalize cost/time penalties
     if priority == "Tiết kiệm chi phí":
-        score -= cost / 9000
+        score -= cost / 20000
         score -= time_min / 18
         score -= emissions * 1.5
     elif priority == "Nhanh nhất":
