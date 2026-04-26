@@ -479,17 +479,17 @@ if vehicle["type"] == "drone" and dist_km > 5:
     if distance > 15 and vehicle["type"] in ["van", "truck"]:
         score += 8
 
-    return {
-        "Phương tiện": vehicle["name"],
-        "Điểm": round(max(0, score), 2),
-        "Chi phí (VNĐ)": int(round(cost)),
-        "Thời gian (phút)": int(round(max(1, time_min))),
-        "Tải trọng tối đa (kg)": vehicle["max_weight"],
-        "CO₂ ước tính (kg)": round(emissions, 2),
-        "Lý do": "; ".join(reasons) if reasons else "Phù hợp ở mức trung bình",
-        "Cảnh báo": "; ".join(warnings) if warnings else "Không có",
-        "Ghi chú": vehicle["note"],
-    }
+return {
+    "Phương tiện": vehicle.get("name", "Unknown"),
+    "Điểm": round(max(0, score), 2),
+    "Chi phí (VNĐ)": int(round(cost)) if cost else 0,
+    "Thời gian (phút)": int(round(max(1, time_min))) if time_min else 0,
+    "Tải trọng tối đa (kg)": vehicle.get("max_weight", 0),
+    "CO₂ ước tính (kg)": round(emissions, 2) if 'emissions' in locals() else 0,
+    "Lý do": "; ".join(reasons) if reasons else "Phù hợp ở mức trung bình",
+    "Cảnh báo": "; ".join(warnings) if warnings else "Không có",
+    "Ghi chú": vehicle.get("note", ""),
+}
 
 
 def evaluate_all_vehicles(*args, **kwargs) -> List[Dict]:
