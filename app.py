@@ -352,11 +352,12 @@ def evaluate_vehicle(
     drone_limit_km: float,
     priority: str,
 ) -> Dict:
+
     distance = route["distance_km"]
     base_time = route["duration_min"]
 
-    # Vehicle-specific time adjustment from route driving estimate
-    speed_adjust = 30 / vehicle["speed_kmh"]
+    # --- TIME ---
+    speed_adjust = 30 / vehicle.get("speed_kmh", vehicle.get("speed", 30))
     time_min = base_time * speed_adjust
 
     if vehicle["type"] == "motorbike" and traffic == "Cao":
@@ -370,28 +371,26 @@ def evaluate_vehicle(
     if flood == "Nặng" and vehicle["type"] in ["motorbike", "van"]:
         time_min *= 1.35
 
-    cost = vehicle["base_cost"] + dist_km * vehicle["cost_per_km"]
+    # --- COST ---
+    cost = vehicle["base_cost"] + distance * vehicle["cost_per_km"]
 
-# 🔥 Tăng giá theo điều kiện thực tế
-    if traffic == "High":
+    if traffic == "Cao":
         cost *= 1.2
-
-    if weather == "Storm":
+    if weather == "Bão/Gió mạnh":
         cost *= 1.3
-
-    if flood == "Widespread":
+    if flood == "Nặng":
         cost *= 1.25
-
-# Drone đắt nếu xa
-    if vehicle["type"] == "drone" and dist_km > 5:
+    if vehicle["type"] == "drone" and distance > 5:
         cost *= 1.5
     if traffic == "Cao" and vehicle["type"] in ["van", "truck"]:
         cost *= 1.15
     if weather in ["Mưa", "Bão/Gió mạnh"] and vehicle["type"] == "motorbike":
         cost *= 1.1
 
-    emissions = distance * vehicle["co2_factor"]
+    # --- EMISSION ---
+    emissions = distance * vehicle.get("co2_factor", 0.2)
 
+    # --- SCORE ---
     score = 100.0
     reasons = []
     warnings = []
@@ -413,364 +412,61 @@ def evaluate_vehicle(
         if distance > drone_limit_km:
             score -= 100
             warnings.append("Vượt giới hạn km cho drone")
-        if weight_kg > vehicle["max_weight"]:
-            score -= 80
         if weather == "Bão/Gió mạnh":
             score -= 120
-            warnings.append("Drone không an toàn khi gió mạnh/bão")
-        if flood == "Nặng":
-            score -= 20
+            warnings.append("Drone không an toàn")
 
     if traffic == "Cao":
         if vehicle["type"] in ["motorbike", "drone"]:
             score += 24
-            reasons.append("Linh hoạt khi tắc đường")
         else:
             score -= 18
 
     if weather in ["Mưa", "Bão/Gió mạnh"]:
         if vehicle["type"] == "van":
             score += 18
-            reasons.append("Bảo vệ hàng tốt khi thời tiết xấu")
-        if vehicle["type"] == "truck":
-            score += 10
         if vehicle["type"] == "motorbike":
             score -= 20
-            warnings.append("Xe máy kém ổn định khi mưa/gió")
 
     if flood == "Nặng":
         if vehicle["type"] == "truck":
             score += 25
-            reasons.append("Gầm cao, phù hợp ngập nặng")
         if vehicle["type"] == "motorbike":
             score -= 28
 
     if urgency == "Rất gấp (≤2h)":
         if vehicle["type"] in ["drone", "motorbike"]:
             score += 26
-            reasons.append("Phù hợp đơn gấp")
         else:
             score -= 10
-    elif urgency == "Gấp":
-        if vehicle["type"] in ["motorbike", "van"]:
-            score += 12
 
-    # Normalize cost/time penalties
+    # --- OPTIMIZATION ---
     if priority == "Tiết kiệm chi phí":
         score -= cost / 20000
         score -= time_min / 18
-        score -= emissions * 1.5
     elif priority == "Nhanh nhất":
         score -= time_min / 6
         score -= cost / 18000
-    elif priority == "Cân bằng":
+    else:
         score -= cost / 12000
         score -= time_min / 10
-        score -= emissions
-    else:  # thân thiện môi trường
-        score -= emissions * 6
-        score -= cost / 15000
-        score -= time_min / 12
-        if vehicle["type"] in ["motorbike", "drone"]:
-            score += 12
 
+    # --- BONUS ---
     if distance <= 3 and vehicle["type"] == "motorbike":
         score += 10
+
     if distance > 15 and vehicle["type"] in ["van", "truck"]:
-    score += 8
-return {
-    "Phương tiện": vehicle.get("name", "Unknown"),
-    "Điểm": round(max(0, score), 2),
-    "Chi phí (VNĐ)": int(round(cost)) if cost else 0,
-    "Thời gian (phút)": int(round(max(1, time_min))) if time_min else 0,
-    "Tải trọng tối đa (kg)": vehicle.get("max_weight", 0),
-    "CO₂ ước tính (kg)": round(emissions, 2) if 'emissions' in locals() else 0,
-    "Lý do": "; ".join(reasons) if reasons else "Phù hợp ở mức trung bình",
-    "Cảnh báo": "; ".join(warnings) if warnings else "Không có",
-    "Ghi chú": vehicle.get("note", ""),
-}
+        score += 8
 
-
-def evaluate_all_vehicles(*args, **kwargs) -> List[Dict]:
-    results = [evaluate_vehicle(v, *args, **kwargs) for v in VEHICLES]
-    return sorted(results, key=lambda x: x["Điểm"], reverse=True)
-
-# -------------------- UI HEADER --------------------
-st.markdown('<div class="main-title">🚚 Last-mile Delivery Vehicle Recommender</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="sub-title">Chọn tuyến đường giống Google Maps và đề xuất phương tiện giao hàng tối ưu cho đô thị Hà Nội.</div>',
-    unsafe_allow_html=True,
-)
-
-# -------------------- SIDEBAR INPUTS --------------------
-with st.sidebar:
-    st.header("⚙️ Cấu hình")
-    auto_status = st.checkbox("Tự động lấy thời tiết & suy luận giao thông", value=True)
-    use_real_route = st.checkbox("Dùng tuyến đường thật nếu có API key", value=True)
-    drone_limit = st.number_input("Giới hạn km cho drone", min_value=1, max_value=50, value=10)
-    priority = st.selectbox(
-        "Mục tiêu tối ưu",
-        ["Cân bằng", "Tiết kiệm chi phí", "Nhanh nhất", "Thân thiện môi trường"],
-        index=0,
-    )
-    st.info("Muốn có nhiều tuyến như Google Maps: thêm GOOGLE_MAPS_API_KEY trong Streamlit Secrets.")
-
-# -------------------- INPUT LOCATIONS --------------------
-st.markdown("## 1. Điểm lấy hàng và điểm giao hàng")
-mode = st.radio(
-    "Chọn cách nhập điểm",
-    ["Địa điểm mẫu Hà Nội", "Nhập tọa độ", "Nhập địa chỉ"],
-    horizontal=True,
-)
-
-origin = None
-destination = None
-
-if mode == "Địa điểm mẫu Hà Nội":
-    col1, col2 = st.columns(2)
-    with col1:
-        origin_name = st.selectbox("Điểm lấy hàng", list(PRESETS.keys()), index=1)
-    with col2:
-        dest_name = st.selectbox("Điểm giao hàng", list(PRESETS.keys()), index=2)
-    origin = PRESETS[origin_name]
-    destination = PRESETS[dest_name]
-
-elif mode == "Nhập tọa độ":
-    col1, col2 = st.columns(2)
-    with col1:
-        st.caption("Điểm lấy hàng")
-        o_lat = st.number_input("Latitude lấy hàng", value=21.026754, format="%.6f")
-        o_lon = st.number_input("Longitude lấy hàng", value=105.846083, format="%.6f")
-    with col2:
-        st.caption("Điểm giao hàng")
-        d_lat = st.number_input("Latitude giao hàng", value=21.028762, format="%.6f")
-        d_lon = st.number_input("Longitude giao hàng", value=105.776900, format="%.6f")
-    origin = (o_lat, o_lon)
-    destination = (d_lat, d_lon)
-
-else:
-    if "geo" not in st.session_state:
-        st.session_state.geo = {"origin": None, "destination": None}
-    col1, col2 = st.columns(2)
-    with col1:
-        start_addr = st.text_input("Địa chỉ lấy hàng", "Hanoi Tower, Hà Nội")
-    with col2:
-        dest_addr = st.text_input("Địa chỉ giao hàng", "Bến xe Mỹ Đình, Hà Nội")
-    if st.button("📍 Lấy tọa độ từ địa chỉ"):
-        if not _geocode:
-            st.error("Geocoder chưa khả dụng. Hãy dùng tọa độ hoặc địa điểm mẫu.")
-        else:
-            with st.spinner("Đang tìm tọa độ..."):
-                loc1 = geocode_address(start_addr)
-                loc2 = geocode_address(dest_addr)
-            if loc1 and loc2:
-                st.session_state.geo = {"origin": loc1, "destination": loc2}
-                st.success("Đã lấy tọa độ thành công.")
-            else:
-                st.error("Không tìm thấy địa chỉ. Hãy nhập cụ thể hơn.")
-    origin = st.session_state.geo["origin"]
-    destination = st.session_state.geo["destination"]
-
-# -------------------- ORDER INPUTS --------------------
-st.markdown("## 2. Thông tin đơn hàng")
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    cargo_type = st.selectbox("Loại hàng", list(CARGO_WEIGHT_HINT.keys()), index=0)
-with col2:
-    default_weight = CARGO_WEIGHT_HINT[cargo_type]
-    weight_kg = st.number_input("Khối lượng hàng (kg)", min_value=0.1, max_value=2500.0, value=float(default_weight), step=0.5)
-with col3:
-    urgency = st.selectbox("Mức độ cấp bách", ["Thấp", "Bình thường", "Gấp", "Rất gấp (≤2h)"], index=1)
-with col4:
-    manual_distance_note = st.empty()
-
-# -------------------- STATUS --------------------
-st.markdown("## 3. Điều kiện tuyến đường")
-status_source = "Thủ công"
-weather = "Tốt"
-flood = "Không"
-traffic = "Trung bình"
-weather_details = {}
-
-if origin and destination and auto_status:
-    try:
-        weather_details = get_weather_and_flood(*origin)
-        weather = weather_details["weather"]
-        flood = weather_details["flood"]
-        traffic = estimate_traffic_level(weather_details["hour"], weather)
-        status_source = "Tự động"
-    except Exception as exc:
-        st.warning(f"Không lấy được thời tiết tự động: {exc}. Chuyển sang nhập thủ công.")
-
-if not auto_status or status_source == "Thủ công":
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        traffic = st.selectbox("Giao thông", ["Thấp", "Trung bình", "Cao"], index=1)
-    with col2:
-        weather = st.selectbox("Thời tiết", ["Tốt", "Mưa", "Bão/Gió mạnh"], index=0)
-    with col3:
-        flood = st.selectbox("Ngập", ["Không", "Cục bộ", "Nặng"], index=0)
-else:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Giao thông", traffic)
-    c2.metric("Thời tiết", weather)
-    c3.metric("Ngập", flood)
-    c4.metric("Mưa 24h", f"{weather_details.get('rain_24h_mm', 0)} mm")
-
-# -------------------- CALCULATION --------------------
-if "routes" not in st.session_state:
-    st.session_state.routes = []
-if "route_message" not in st.session_state:
-    st.session_state.route_message = ""
-
-calc = st.button("🚀 Tính tuyến & đề xuất phương tiện", type="primary")
-
-if calc:
-    if not origin or not destination:
-        st.error("Vui lòng nhập đủ điểm lấy hàng và điểm giao hàng.")
-        st.stop()
-
-    routes = []
-    messages = []
-
-    if use_real_route:
-        google_key = get_secret("GOOGLE_MAPS_API_KEY")
-        if google_key:
-            try:
-                routes = get_google_routes(origin, destination, google_key)
-                messages.append(f"Đã lấy {len(routes)} tuyến từ Google Directions.")
-            except Exception as exc:
-                messages.append(f"Google Directions lỗi: {exc}")
-        else:
-            messages.append("Chưa có GOOGLE_MAPS_API_KEY nên chưa lấy được nhiều tuyến Google Maps.")
-
-        if not routes:
-            for profile in ["driving-car", "cycling-electric", "driving-hgv"]:
-                try:
-                    routes.append(get_ors_route(origin, destination, profile))
-                except Exception as exc:
-                    messages.append(f"ORS {profile}: {exc}")
-            if routes:
-                messages.append("Đã dùng OpenRouteService fallback.")
-
-    if not routes:
-        routes = [fallback_straight_route(origin, destination)]
-        messages.append("Đang dùng đường thẳng ước lượng vì chưa có API key hợp lệ.")
-
-    st.session_state.routes = routes
-    st.session_state.route_message = " | ".join(messages)
-
-routes = st.session_state.routes
-
-if routes:
-    st.markdown("## 4. Chọn tuyến đường")
-    if st.session_state.route_message:
-        if "đường thẳng" in st.session_state.route_message.lower() or "chưa" in st.session_state.route_message.lower():
-            st.warning(st.session_state.route_message)
-        else:
-            st.success(st.session_state.route_message)
-
-    route_labels = [
-        f"Tuyến {i + 1}: {r['name']} — {r['distance_km']:.1f} km — {int(r['duration_min'])} phút — {r['source']}"
-        for i, r in enumerate(routes)
-    ]
-    selected_idx = st.selectbox("Chọn tuyến giống Google Maps", range(len(routes)), format_func=lambda i: route_labels[i])
-    selected_route = routes[selected_idx]
-
-    results = evaluate_all_vehicles(
-        cargo_type,
-        weight_kg,
-        urgency,
-        traffic,
-        weather,
-        flood,
-        selected_route,
-        drone_limit,
-        priority,
-    )
-    best = results[0]
-
-    st.markdown("## 5. Kết quả đề xuất")
-    st.markdown(
-        f"""
-        <div class="best-box">
-            <h3>✅ Phương tiện tối ưu: {best['Phương tiện']}</h3>
-            <p><b>Điểm:</b> {best['Điểm']} &nbsp; | &nbsp; <b>Chi phí:</b> {best['Chi phí (VNĐ)']:,} VNĐ &nbsp; | &nbsp; <b>Thời gian:</b> {best['Thời gian (phút)']} phút</p>
-            <p><b>Lý do:</b> {best['Lý do']}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Tuyến đã chọn", f"{selected_route['distance_km']:.1f} km")
-    m2.metric("Thời gian tuyến", f"{int(selected_route['duration_min'])} phút")
-    m3.metric("Nguồn tuyến", selected_route["source"])
-    m4.metric("Mục tiêu", priority)
-
-    df = pd.DataFrame(results)
-    st.dataframe(
-        df[["Phương tiện", "Điểm", "Chi phí (VNĐ)", "Thời gian (phút)", "Tải trọng tối đa (kg)", "CO₂ ước tính (kg)", "Lý do", "Cảnh báo"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    with st.expander("Giải thích chi tiết từng phương tiện"):
-        for item in results:
-            st.markdown(
-                f"""
-                <div class="route-box">
-                <b>{item['Phương tiện']}</b><br>
-                Điểm: {item['Điểm']} | Chi phí: {item['Chi phí (VNĐ)']:,} VNĐ | Thời gian: {item['Thời gian (phút)']} phút<br>
-                Lý do: {item['Lý do']}<br>
-                Cảnh báo: {item['Cảnh báo']}<br>
-                Ghi chú: {item['Ghi chú']}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    # -------------------- MAP --------------------
-    st.markdown("## 6. Bản đồ tuyến đường")
-    center = ((origin[0] + destination[0]) / 2, (origin[1] + destination[1]) / 2)
-    fmap = folium.Map(location=center, zoom_start=12, tiles="OpenStreetMap")
-
-    folium.Marker(origin, tooltip="Điểm lấy hàng", popup="Điểm lấy hàng", icon=folium.Icon(color="green", icon="play")).add_to(fmap)
-    folium.Marker(destination, tooltip="Điểm giao hàng", popup="Điểm giao hàng", icon=folium.Icon(color="red", icon="flag")).add_to(fmap)
-
-    route_colors = ["blue", "gray", "green", "purple", "orange"]
-    for i, route in enumerate(routes):
-        color = route_colors[i % len(route_colors)]
-        is_selected = i == selected_idx
-        tooltip = f"Tuyến {i + 1}: {route['distance_km']:.1f} km, {int(route['duration_min'])} phút"
-        folium.PolyLine(
-            route["path"],
-            color=color,
-            weight=8 if is_selected else 4,
-            opacity=0.95 if is_selected else 0.35,
-            tooltip=tooltip,
-        ).add_to(fmap)
-
-        # Midpoint label marker
-        if route["path"]:
-            mid_point = route["path"][len(route["path"]) // 2]
-            folium.Marker(
-                mid_point,
-                tooltip=tooltip,
-                icon=folium.DivIcon(
-                    html=f"""
-                    <div style='background:#ffffff;border:1px solid #cbd5e1;border-radius:12px;padding:4px 8px;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);white-space:nowrap;'>
-                    {'✅ ' if is_selected else ''}Tuyến {i+1}: {route['distance_km']:.1f} km
-                    </div>
-                    """
-                ),
-            ).add_to(fmap)
-
-    st_folium(fmap, width=None, height=560)
-
-else:
-    st.info("Nhập thông tin rồi bấm **Tính tuyến & đề xuất phương tiện** để bắt đầu.")
-
-st.caption(
-    "Ghi chú: Google Directions API cho nhiều tuyến giống Google Maps nếu có GOOGLE_MAPS_API_KEY. Nếu không có, app tự fallback sang OpenRouteService hoặc đường thẳng ước lượng."
-)
+    # --- RETURN ---
+    return {
+        "Phương tiện": vehicle.get("name", "Unknown"),
+        "Điểm": round(max(0, score), 2),
+        "Chi phí (VNĐ)": int(round(cost)),
+        "Thời gian (phút)": int(round(max(1, time_min))),
+        "Tải trọng tối đa (kg)": vehicle.get("max_weight", 0),
+        "CO₂ ước tính (kg)": round(emissions, 2),
+        "Lý do": "; ".join(reasons) if reasons else "Phù hợp ở mức trung bình",
+        "Cảnh báo": "; ".join(warnings) if warnings else "Không có",
+        "Ghi chú": vehicle.get("note", ""),
+    }
