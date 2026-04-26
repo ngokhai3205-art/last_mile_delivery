@@ -477,8 +477,7 @@ def evaluate_vehicle(
     if distance <= 3 and vehicle["type"] == "motorbike":
         score += 10
     if distance > 15 and vehicle["type"] in ["van", "truck"]:
-        score += 8
-
+    score += 8
 return {
     "Phương tiện": vehicle.get("name", "Unknown"),
     "Điểm": round(max(0, score), 2),
