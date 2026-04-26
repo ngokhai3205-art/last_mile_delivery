@@ -88,8 +88,8 @@ VEHICLES = [
         "type": "truck",
         "max_weight": 2000,
         "speed_kmh": 25,
-        "base_cost": 120000,
-        "cost_per_km": 12000,
+        "base_cost": 50000,
+        "cost_per_km": 8000,
         "co2_factor": 0.75,
         "good_for": ["Hàng nặng", "Hàng cồng kềnh", "Hàng công nghiệp"],
         "note": "Phù hợp hàng nặng, hàng lớn, tuyến dài hoặc cần tải trọng cao.",
@@ -98,31 +98,30 @@ VEHICLES = [
         "name": "Xe van",
         "type": "van",
         "max_weight": 800,
-        "speed_kmh": 30,
-        "base_cost": 80000,
-        "cost_per_km": 9000,
+        "speed": 30,
+        "base_cost": 30000,
+        "cost_per_km": 6000,
         "co2_factor": 0.45,
         "good_for": ["Thực phẩm", "Hàng dễ vỡ", "Hàng trung bình", "Hàng giá trị cao"],
         "note": "Bảo vệ hàng tốt, phù hợp mưa lớn và hàng cần che chắn.",
     },
     {
-        "name": "Xe máy / xe điện",
+         "name": "Xe máy / xe điện",
         "type": "motorbike",
         "max_weight": 30,
-        "speed_kmh": 35,
-        "base_cost": 25000,
-        "cost_per_km": 5000,
-        "co2_factor": 0.12,
+        "speed": 35,
+        "base_cost": 10000,
+        "cost_per_km": 4000,
         "good_for": ["Tài liệu", "Đồ ăn", "Hàng nhẹ", "Hàng y tế nhỏ"],
         "note": "Linh hoạt trong nội đô, phù hợp khi tắc đường và đơn nhỏ.",
     },
     {
-        "name": "Drone",
+    "name": "Drone",
         "type": "drone",
         "max_weight": 5,
-        "speed_kmh": 45,
-        "base_cost": 40000,
-        "cost_per_km": 7000,
+        "speed": 45,
+        "base_cost": 20000,
+        "cost_per_km": 5000,
         "co2_factor": 0.05,
         "good_for": ["Tài liệu", "Hàng y tế nhỏ", "Hàng rất gấp"],
         "note": "Rất nhanh với hàng nhẹ, nhưng phụ thuộc thời tiết và giới hạn khoảng cách.",
@@ -353,12 +352,23 @@ def evaluate_vehicle(
     drone_limit_km: float,
     priority: str,
 ) -> Dict:
-    distance = route["distance_km"]
-    base_time = route["duration_min"]
+    """Chấm điểm một phương tiện cho một tuyến giao hàng.
 
-    # Vehicle-specific time adjustment from route driving estimate
-    speed_adjust = 30 / vehicle["speed_kmh"]
-    time_min = base_time * speed_adjust
+    Hàm này đã được clean lại để:
+    - không lỗi indent / return outside function
+    - dùng đúng biến distance thay cho dist_km
+    - dùng đúng nhãn tiếng Việt: Cao, Mưa, Bão/Gió mạnh, Nặng
+    - xử lý an toàn khi một phương tiện thiếu speed_kmh hoặc co2_factor
+    """
+    distance = float(route.get("distance_km", 0) or 0)
+    base_time = float(route.get("duration_min", 0) or 0)
+
+    vehicle_speed = float(vehicle.get("speed_kmh", vehicle.get("speed", 30)) or 30)
+
+    # -------------------- TIME --------------------
+    # Route time thường là profile driving-car. Điều chỉnh theo tốc độ từng phương tiện.
+    speed_adjust = 30 / vehicle_speed
+    time_min = max(1.0, base_time * speed_adjust)
 
     if vehicle["type"] == "motorbike" and traffic == "Cao":
         time_min *= 0.78
@@ -371,18 +381,32 @@ def evaluate_vehicle(
     if flood == "Nặng" and vehicle["type"] in ["motorbike", "van"]:
         time_min *= 1.35
 
+    # -------------------- COST --------------------
     cost = vehicle["base_cost"] + distance * vehicle["cost_per_km"]
+
+    # Tăng giá theo điều kiện thực tế đô thị.
+    if traffic == "Cao":
+        cost *= 1.2
+    if weather == "Bão/Gió mạnh":
+        cost *= 1.3
+    if flood == "Nặng":
+        cost *= 1.25
+    if vehicle["type"] == "drone" and distance > 5:
+        cost *= 1.5
     if traffic == "Cao" and vehicle["type"] in ["van", "truck"]:
         cost *= 1.15
     if weather in ["Mưa", "Bão/Gió mạnh"] and vehicle["type"] == "motorbike":
         cost *= 1.1
 
-    emissions = distance * vehicle["co2_factor"]
+    # -------------------- EMISSION --------------------
+    emissions = distance * float(vehicle.get("co2_factor", 0.12))
 
+    # -------------------- SCORE --------------------
     score = 100.0
     reasons = []
     warnings = []
 
+    # Tải trọng
     if weight_kg <= vehicle["max_weight"]:
         score += 18
         reasons.append("Đáp ứng tải trọng")
@@ -390,12 +414,14 @@ def evaluate_vehicle(
         score -= 120
         warnings.append("Vượt tải trọng")
 
+    # Loại hàng
     if cargo_type in vehicle["good_for"]:
         score += 20
         reasons.append("Phù hợp loại hàng")
     else:
         score -= 8
 
+    # Drone constraints
     if vehicle["type"] == "drone":
         if distance > drone_limit_km:
             score -= 100
@@ -408,6 +434,7 @@ def evaluate_vehicle(
         if flood == "Nặng":
             score -= 20
 
+    # Giao thông
     if traffic == "Cao":
         if vehicle["type"] in ["motorbike", "drone"]:
             score += 24
@@ -415,6 +442,7 @@ def evaluate_vehicle(
         else:
             score -= 18
 
+    # Thời tiết
     if weather in ["Mưa", "Bão/Gió mạnh"]:
         if vehicle["type"] == "van":
             score += 18
@@ -425,6 +453,7 @@ def evaluate_vehicle(
             score -= 20
             warnings.append("Xe máy kém ổn định khi mưa/gió")
 
+    # Ngập
     if flood == "Nặng":
         if vehicle["type"] == "truck":
             score += 25
@@ -432,6 +461,7 @@ def evaluate_vehicle(
         if vehicle["type"] == "motorbike":
             score -= 28
 
+    # Cấp bách
     if urgency == "Rất gấp (≤2h)":
         if vehicle["type"] in ["drone", "motorbike"]:
             score += 26
@@ -442,9 +472,9 @@ def evaluate_vehicle(
         if vehicle["type"] in ["motorbike", "van"]:
             score += 12
 
-    # Normalize cost/time penalties
+    # Mục tiêu tối ưu
     if priority == "Tiết kiệm chi phí":
-        score -= cost / 9000
+        score -= cost / 20000
         score -= time_min / 18
         score -= emissions * 1.5
     elif priority == "Nhanh nhất":
@@ -454,28 +484,29 @@ def evaluate_vehicle(
         score -= cost / 12000
         score -= time_min / 10
         score -= emissions
-    else:  # thân thiện môi trường
+    else:  # Thân thiện môi trường
         score -= emissions * 6
         score -= cost / 15000
         score -= time_min / 12
         if vehicle["type"] in ["motorbike", "drone"]:
             score += 12
 
+    # Bonus theo khoảng cách
     if distance <= 3 and vehicle["type"] == "motorbike":
         score += 10
     if distance > 15 and vehicle["type"] in ["van", "truck"]:
         score += 8
 
     return {
-        "Phương tiện": vehicle["name"],
+        "Phương tiện": vehicle.get("name", "Unknown"),
         "Điểm": round(max(0, score), 2),
         "Chi phí (VNĐ)": int(round(cost)),
         "Thời gian (phút)": int(round(max(1, time_min))),
-        "Tải trọng tối đa (kg)": vehicle["max_weight"],
+        "Tải trọng tối đa (kg)": vehicle.get("max_weight", 0),
         "CO₂ ước tính (kg)": round(emissions, 2),
         "Lý do": "; ".join(reasons) if reasons else "Phù hợp ở mức trung bình",
         "Cảnh báo": "; ".join(warnings) if warnings else "Không có",
-        "Ghi chú": vehicle["note"],
+        "Ghi chú": vehicle.get("note", ""),
     }
 
 
