@@ -1,0 +1,7 @@
+streamlit
+folium
+streamlit-folium
+geopy
+requests
+openrouteservice
+pandas
