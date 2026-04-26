@@ -215,7 +215,12 @@ def get_weather_and_flood(lat: float, lon: float) -> Dict:
     weather = weather_from_code(code, wind)
     precip = js.get("hourly", {}).get("precipitation", [])
     precip_sum = sum(p for p in precip if isinstance(p, (int, float)))
-    flood = "Nặng" if precip_sum >= 100 else ("Cục bộ" if precip_sum >= 30 else "Không")
+    if precip_sum >= 150:
+    flood = "Nặng"
+    elif precip_sum >= 80:
+    flood = "Cục bộ"
+    else:
+    flood = "Không"
     hour_local = int(cw.get("time", "2024-01-01T12:00")[11:13]) if cw.get("time") else dt.datetime.now().hour
     return {
         "weather": weather,
