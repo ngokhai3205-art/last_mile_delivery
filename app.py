@@ -374,17 +374,17 @@ def evaluate_vehicle(
 
 # 🔥 Tăng giá theo điều kiện thực tế
     if traffic == "High":
-    cost *= 1.2
+        cost *= 1.2
 
     if weather == "Storm":
-    cost *= 1.3
+        cost *= 1.3
 
     if flood == "Widespread":
-    cost *= 1.25
+        cost *= 1.25
 
 # Drone đắt nếu xa
     if vehicle["type"] == "drone" and dist_km > 5:
-    cost *= 1.5
+        cost *= 1.5
     if traffic == "Cao" and vehicle["type"] in ["van", "truck"]:
         cost *= 1.15
     if weather in ["Mưa", "Bão/Gió mạnh"] and vehicle["type"] == "motorbike":
