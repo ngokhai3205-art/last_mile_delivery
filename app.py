@@ -253,6 +253,77 @@ def estimate_traffic_level(hour_local: int, weather: str) -> str:
         bump = 2
     return levels[min(2, levels.index(level) + bump)]
 
+
+
+def get_route_conditions(origin: Optional[Coordinate], auto_status: bool) -> Dict:
+    """Returns traffic, weather, and flooding conditions.
+
+    The weather API is called only when the user clicks the Calculate button,
+    not on every Streamlit rerun. This prevents 429 Too Many Requests errors.
+    """
+    default_conditions = {
+        "traffic": "Medium",
+        "weather": "Good",
+        "flood": "None",
+        "weather_details": {
+            "weather": "Good",
+            "flood": "None",
+            "wind_kmh": 0,
+            "rain_24h_mm": 0,
+            "hour": dt.datetime.now().hour,
+            "timezone": "local fallback",
+        },
+        "status_source": "Automatic fallback",
+        "message": "Weather API was not called. Using automatic fallback conditions.",
+    }
+
+    if not auto_status or not origin:
+        return default_conditions
+
+    rounded_origin = (round(origin[0], 4), round(origin[1], 4))
+
+    try:
+        weather_details = get_weather_and_flood(*rounded_origin)
+        weather = weather_details["weather"]
+        flood = weather_details["flood"]
+        traffic = estimate_traffic_level(weather_details["hour"], weather)
+
+        conditions = {
+            "traffic": traffic,
+            "weather": weather,
+            "flood": flood,
+            "weather_details": weather_details,
+            "status_source": "Automatic",
+            "message": "Weather and traffic conditions were updated automatically.",
+        }
+        st.session_state.last_weather = {
+            "origin": rounded_origin,
+            **conditions,
+        }
+        return conditions
+
+    except Exception as exc:
+        cached = st.session_state.get("last_weather")
+        if cached and cached.get("origin") == rounded_origin:
+            return {
+                "traffic": cached.get("traffic", "Medium"),
+                "weather": cached.get("weather", "Good"),
+                "flood": cached.get("flood", "None"),
+                "weather_details": cached.get("weather_details", default_conditions["weather_details"]),
+                "status_source": "Automatic (cached)",
+                "message": "Weather API is temporarily unavailable. Using the last saved automatic weather data.",
+            }
+
+        current_hour = dt.datetime.now().hour
+        traffic = estimate_traffic_level(current_hour, "Good")
+        default_conditions["traffic"] = traffic
+        default_conditions["weather_details"]["hour"] = current_hour
+        default_conditions["message"] = (
+            "Weather API is temporarily unavailable, so the app used automatic fallback conditions. "
+            "This usually happens when Open-Meteo returns 429 Too Many Requests."
+        )
+        return default_conditions
+
 # -------------------- ROUTING --------------------
 def get_google_routes(origin: Coordinate, destination: Coordinate, api_key: str) -> List[Dict]:
     url = "https://maps.googleapis.com/maps/api/directions/json"
@@ -719,52 +790,15 @@ st.markdown("## 3. Route conditions")
 if "last_weather" not in st.session_state:
     st.session_state.last_weather = None
 
-status_source = "Manual"
-weather = "Good"
-flood = "None"
-traffic = "Medium"
-weather_details = {}
-
-if origin and destination and auto_status:
-    rounded_origin = (round(origin[0], 4), round(origin[1], 4))
-    try:
-        # Rounded coordinates + Streamlit cache prevent repeated API calls on every rerun.
-        weather_details = get_weather_and_flood(*rounded_origin)
-        weather = weather_details["weather"]
-        flood = weather_details["flood"]
-        traffic = estimate_traffic_level(weather_details["hour"], weather)
-        status_source = "Automatic"
-        st.session_state.last_weather = {
-            "origin": rounded_origin,
-            "weather_details": weather_details,
-            "weather": weather,
-            "flood": flood,
-            "traffic": traffic,
-        }
-    except Exception as exc:
-        cached = st.session_state.get("last_weather")
-        if cached and cached.get("origin") == rounded_origin:
-            weather_details = cached["weather_details"]
-            weather = cached["weather"]
-            flood = cached["flood"]
-            traffic = cached["traffic"]
-            status_source = "Automatic (cached)"
-            st.info(f"Weather API is temporarily unavailable. Using the last automatic weather data. Details: {exc}")
-        else:
-            # Keep the app automatic even if the weather API is rate-limited.
-            # This avoids forcing manual input when Open-Meteo returns 429 Too Many Requests.
-            current_hour = dt.datetime.now().hour
-            weather_details = {
-                "weather": weather,
-                "flood": flood,
-                "wind_kmh": 0,
-                "rain_24h_mm": 0,
-                "hour": current_hour,
-                "timezone": "local fallback",
-            }
-            traffic = estimate_traffic_level(current_hour, weather)
-            status_source = "Automatic fallback"
-            st.info(f"Weather API is temporarily unavailable. Using automatic fallback conditions. Details: {exc}")
+if "route_conditions" not in st.session_state:
+    st.session_state.route_conditions = {
+        "traffic": "Medium",
+        "weather": "Good",
+        "flood": "None",
+        "weather_details": {"rain_24h_mm": 0, "hour": dt.datetime.now().hour, "timezone": "not calculated yet"},
+        "status_source": "Not calculated yet",
+        "message": "Click Calculate to update automatic weather and traffic conditions.",
+    }
 
 if not auto_status:
     col1, col2, col3 = st.columns(3)
@@ -774,13 +808,35 @@ if not auto_status:
         weather = st.selectbox("Weather", ["Good", "Rain", "Storm/Strong wind"], index=0)
     with col3:
         flood = st.selectbox("Flooding", ["None", "Localized", "Heavy"], index=0)
+
+    weather_details = {"rain_24h_mm": 0, "hour": dt.datetime.now().hour, "timezone": "manual"}
+    status_source = "Manual"
+    st.session_state.route_conditions = {
+        "traffic": traffic,
+        "weather": weather,
+        "flood": flood,
+        "weather_details": weather_details,
+        "status_source": status_source,
+        "message": "Using manually selected route conditions.",
+    }
 else:
+    current_conditions = st.session_state.route_conditions
+    traffic = current_conditions.get("traffic", "Medium")
+    weather = current_conditions.get("weather", "Good")
+    flood = current_conditions.get("flood", "None")
+    weather_details = current_conditions.get("weather_details", {})
+    status_source = current_conditions.get("status_source", "Not calculated yet")
+
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Traffic", traffic)
     c2.metric("Weather", weather)
     c3.metric("Flooding", flood)
     c4.metric("24h rain", f"{weather_details.get('rain_24h_mm', 0)} mm")
     c5.metric("Status source", status_source)
+
+    message = current_conditions.get("message", "")
+    if message and status_source != "Automatic":
+        st.info(message)
 
 # -------------------- CALCULATION --------------------
 if "routes" not in st.session_state:
@@ -794,6 +850,25 @@ if calc:
     if not origin or not destination:
         st.error("Please enter both pickup and delivery locations.")
         st.stop()
+
+    if auto_status:
+        st.session_state.route_conditions = get_route_conditions(origin, auto_status=True)
+    else:
+        st.session_state.route_conditions = {
+            "traffic": traffic,
+            "weather": weather,
+            "flood": flood,
+            "weather_details": weather_details,
+            "status_source": "Manual",
+            "message": "Using manually selected route conditions.",
+        }
+
+    current_conditions = st.session_state.route_conditions
+    traffic = current_conditions.get("traffic", "Medium")
+    weather = current_conditions.get("weather", "Good")
+    flood = current_conditions.get("flood", "None")
+    weather_details = current_conditions.get("weather_details", {})
+    status_source = current_conditions.get("status_source", "Manual")
 
     routes = []
     messages = []
