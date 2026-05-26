@@ -3,9 +3,11 @@
 
 import os
 import io
+import zipfile
 import math
 import datetime as dt
 from typing import Dict, List, Optional, Tuple
+from xml.sax.saxutils import escape
 
 import requests
 import pandas as pd
@@ -553,11 +555,73 @@ def build_export_dataframe(
     return export_df
 
 
+def _excel_column_name(index: int) -> str:
+    """Converts a 1-based column index to an Excel column name."""
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
 def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    """Converts a dataframe to an Excel file in memory."""
+    """Converts a dataframe to a basic .xlsx file in memory.
+
+    This implementation uses only Python standard libraries. It avoids optional
+    Excel dependencies such as openpyxl or xlsxwriter, which may not be installed
+    on Streamlit Cloud.
+    """
+    rows = [list(df.columns)] + df.astype(object).where(pd.notnull(df), "").values.tolist()
+
+    sheet_rows = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for col_index, value in enumerate(row, start=1):
+            cell_ref = f"{_excel_column_name(col_index)}{row_index}"
+            if isinstance(value, bool):
+                cells.append(f'<c r="{cell_ref}" t="b"><v>{1 if value else 0}</v></c>')
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                cells.append(f'<c r="{cell_ref}"><v>{value}</v></c>')
+            else:
+                text_value = escape(str(value))
+                cells.append(f'<c r="{cell_ref}" t="inlineStr"><is><t>{text_value}</t></is></c>')
+        sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+
+    sheet_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>{''.join(sheet_rows)}</sheetData>
+</worksheet>"""
+
+    workbook_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Recommendation Results" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"""
+
+    workbook_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"""
+
+    root_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"""
+
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Recommendation Results")
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as xlsx:
+        xlsx.writestr("[Content_Types].xml", content_types)
+        xlsx.writestr("_rels/.rels", root_rels)
+        xlsx.writestr("xl/workbook.xml", workbook_xml)
+        xlsx.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        xlsx.writestr("xl/worksheets/sheet1.xml", sheet_xml)
     return output.getvalue()
 
 # -------------------- UI HEADER --------------------
