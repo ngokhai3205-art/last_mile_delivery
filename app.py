@@ -2,6 +2,7 @@
 # Google Maps-like routes + ORS fallback + Streamlit/Folium UI
 
 import os
+import io
 import math
 import datetime as dt
 from typing import Dict, List, Optional, Tuple
@@ -196,6 +197,7 @@ def weather_from_code(code: int, wind_kmh: float) -> str:
     return "Good"
 
 
+@st.cache_data(ttl=900, show_spinner=False)
 def get_weather_and_flood(lat: float, lon: float) -> Dict:
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -519,6 +521,45 @@ def evaluate_all_vehicles(*args, **kwargs) -> List[Dict]:
     results = [evaluate_vehicle(v, *args, **kwargs) for v in VEHICLES]
     return sorted(results, key=lambda x: x["Score"], reverse=True)
 
+
+# -------------------- EXPORT HELPERS --------------------
+def build_export_dataframe(
+    results: List[Dict],
+    selected_route: Dict,
+    cargo_type: str,
+    weight_kg: float,
+    urgency: str,
+    traffic: str,
+    weather: str,
+    flood: str,
+    priority: str,
+    status_source: str,
+) -> pd.DataFrame:
+    """Builds a flat table for CSV and Excel export."""
+    export_df = pd.DataFrame(results).copy()
+    export_df.insert(0, "Export time", dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    export_df.insert(1, "Selected route", selected_route.get("name", ""))
+    export_df.insert(2, "Route source", selected_route.get("source", ""))
+    export_df.insert(3, "Route distance (km)", round(float(selected_route.get("distance_km", 0) or 0), 2))
+    export_df.insert(4, "Route time (minutes)", round(float(selected_route.get("duration_min", 0) or 0), 1))
+    export_df.insert(5, "Cargo type", cargo_type)
+    export_df.insert(6, "Cargo weight (kg)", weight_kg)
+    export_df.insert(7, "Urgency", urgency)
+    export_df.insert(8, "Traffic", traffic)
+    export_df.insert(9, "Weather", weather)
+    export_df.insert(10, "Flooding", flood)
+    export_df.insert(11, "Optimization goal", priority)
+    export_df.insert(12, "Condition source", status_source)
+    return export_df
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    """Converts a dataframe to an Excel file in memory."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Recommendation Results")
+    return output.getvalue()
+
 # -------------------- UI HEADER --------------------
 st.markdown('<div class="main-title">🚚 Last-mile Delivery Vehicle Recommender</div>', unsafe_allow_html=True)
 st.markdown(
@@ -610,6 +651,10 @@ with col4:
 
 # -------------------- STATUS --------------------
 st.markdown("## 3. Route conditions")
+
+if "last_weather" not in st.session_state:
+    st.session_state.last_weather = None
+
 status_source = "Manual"
 weather = "Good"
 flood = "None"
@@ -617,16 +662,47 @@ traffic = "Medium"
 weather_details = {}
 
 if origin and destination and auto_status:
+    rounded_origin = (round(origin[0], 4), round(origin[1], 4))
     try:
-        weather_details = get_weather_and_flood(*origin)
+        # Rounded coordinates + Streamlit cache prevent repeated API calls on every rerun.
+        weather_details = get_weather_and_flood(*rounded_origin)
         weather = weather_details["weather"]
         flood = weather_details["flood"]
         traffic = estimate_traffic_level(weather_details["hour"], weather)
         status_source = "Automatic"
+        st.session_state.last_weather = {
+            "origin": rounded_origin,
+            "weather_details": weather_details,
+            "weather": weather,
+            "flood": flood,
+            "traffic": traffic,
+        }
     except Exception as exc:
-        st.warning(f"Could not fetch weather automatically: {exc}. Switching to manual input.")
+        cached = st.session_state.get("last_weather")
+        if cached and cached.get("origin") == rounded_origin:
+            weather_details = cached["weather_details"]
+            weather = cached["weather"]
+            flood = cached["flood"]
+            traffic = cached["traffic"]
+            status_source = "Automatic (cached)"
+            st.info(f"Weather API is temporarily unavailable. Using the last automatic weather data. Details: {exc}")
+        else:
+            # Keep the app automatic even if the weather API is rate-limited.
+            # This avoids forcing manual input when Open-Meteo returns 429 Too Many Requests.
+            current_hour = dt.datetime.now().hour
+            weather_details = {
+                "weather": weather,
+                "flood": flood,
+                "wind_kmh": 0,
+                "rain_24h_mm": 0,
+                "hour": current_hour,
+                "timezone": "local fallback",
+            }
+            traffic = estimate_traffic_level(current_hour, weather)
+            status_source = "Automatic fallback"
+            st.info(f"Weather API is temporarily unavailable. Using automatic fallback conditions. Details: {exc}")
 
-if not auto_status or status_source == "Manual":
+if not auto_status:
     col1, col2, col3 = st.columns(3)
     with col1:
         traffic = st.selectbox("Traffic", ["Low", "Medium", "High"], index=1)
@@ -635,11 +711,12 @@ if not auto_status or status_source == "Manual":
     with col3:
         flood = st.selectbox("Flooding", ["None", "Localized", "Heavy"], index=0)
 else:
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Traffic", traffic)
     c2.metric("Weather", weather)
     c3.metric("Flooding", flood)
     c4.metric("24h rain", f"{weather_details.get('rain_24h_mm', 0)} mm")
+    c5.metric("Status source", status_source)
 
 # -------------------- CALCULATION --------------------
 if "routes" not in st.session_state:
@@ -738,6 +815,43 @@ if routes:
         use_container_width=True,
         hide_index=True,
     )
+
+    # -------------------- EXPORT RESULTS --------------------
+    st.markdown("### Export results")
+    export_df = build_export_dataframe(
+        results=results,
+        selected_route=selected_route,
+        cargo_type=cargo_type,
+        weight_kg=weight_kg,
+        urgency=urgency,
+        traffic=traffic,
+        weather=weather,
+        flood=flood,
+        priority=priority,
+        status_source=status_source,
+    )
+
+    csv_data = export_df.to_csv(index=False).encode("utf-8-sig")
+    excel_data = dataframe_to_excel_bytes(export_df)
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    export_col1, export_col2 = st.columns(2)
+    with export_col1:
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_data,
+            file_name=f"delivery_recommendation_{timestamp}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with export_col2:
+        st.download_button(
+            label="⬇️ Download Excel",
+            data=excel_data,
+            file_name=f"delivery_recommendation_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
     with st.expander("Detailed explanation for each vehicle"):
         for item in results:
